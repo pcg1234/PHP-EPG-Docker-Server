@@ -1,0 +1,42 @@
+name: Sync Icon List
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 每天运行一次
+  workflow_dispatch: # 手动触发
+
+jobs:
+  update-png-list:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Checkout submodules
+        run: |
+          git submodule update --init --recursive
+
+      - name: Install dependencies
+        run: sudo apt-get install -y jq curl git
+
+      - name: Clone fanmingming/live repository
+        run: |
+          git clone --depth=1 https://github.com/fanmingming/live.git fanmingming-live
+
+      - name: Copy PNG files and create iconList_default.json
+        run: |
+          mkdir -p epg/data/icon
+          cp fanmingming-live/tv/*.png epg/data/icon/
+
+          # 创建 JSON 文件，路径修改为本地路径
+          cd fanmingming-live/tv
+          ls *.png | sed 's/\.png$//' | jq -R -s 'split("\n")[:-1] | map({(.): "/epg/data/icon/\(.).png"}) | add' > ../../epg/iconList_default.json
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add epg/data/icon epg/iconList_default.json
+          git diff --cached --quiet || git commit -m "Update PNG files and iconList_default.json"
+          git push
