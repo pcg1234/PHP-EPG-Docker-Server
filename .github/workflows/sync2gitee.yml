@@ -22,8 +22,8 @@ jobs:
       - name: Mirror the GitHub repos to Gitee
         uses: Yikun/hub-mirror-action@master
         with:
-          src: github/TakcC
-          dst: gitee/takcheung
+          src: github/taksssss
+          dst: gitee/taksssss
           dst_key: ${{ secrets.GITEE_PRIVATE_KEY }}
           dst_token: ${{ secrets.GITEE_TOKEN }}
           static_list: '${{ steps.info.outputs.result }}'

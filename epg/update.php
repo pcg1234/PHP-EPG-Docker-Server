@@ -6,7 +6,7 @@
  * 该脚本用于定期从配置的 XML 源下载节目数据，并将其存入 SQLite 数据库中。
  * 
  * 作者: Tak
- * GitHub: https://github.com/TakcC/PHP-EPG-Docker-Server
+ * GitHub: https://github.com/taksssss/EPG-Server
  */
 
 // 引入公共脚本
@@ -18,18 +18,15 @@ set_time_limit(20*60);
 // 设置时间格式
 define('TIME_FORMAT', "[y-m-d H:i:s]");
 
-// 日志记录函数
-function logMessage(&$log_messages, $message) {
-    $log_messages[] = date(TIME_FORMAT) . " " . $message;
-}
-
 // 删除过期数据和日志
 function deleteOldData($db, $keep_days, &$log_messages) {
     global $Config;
 
     // 删除 t.xml 和 t.xml.gz 文件
-    @unlink('./t.xml');
-    @unlink('./t.xml.gz');
+    if (!$Config['gen_xml']) {
+        @unlink('./t.xml');
+        @unlink('./t.xml.gz');
+    }
 
     // 循环清理过期数据
     $threshold_date = date('Y-m-d', strtotime("-$keep_days days + 1 day"));
@@ -57,21 +54,24 @@ function getFormatTime($time) {
     ];
 }
 
-// 下载数据并存入数据库
-function processData($xml_url, $db, &$log_messages, $gen_list) {
+// 下载 XML 数据并存入数据库
+function downloadXmlData($xml_url, $db, &$log_messages, $gen_list) {
+    global $Config;
     $xml_data = downloadData($xml_url);
     if ($xml_data !== false && stripos($xml_data, 'not found') === false) {
         logMessage($log_messages, "【下载】 成功");
-        if (strtoupper(substr($xml_url, -3)) === '.GZ') {
+        if (substr($xml_data, 0, 2) === "\x1F\x8B") { // 通过魔数判断 .gz 文件
             $xml_data = gzdecode($xml_data);
             if ($xml_data === false) {
                 logMessage($log_messages, ' 【解压缩失败！！！】');
                 return;
             }
         }
+        $xml_data = preg_replace('/[\x00-\x1F]/u', ' ', $xml_data); // 清除所有控制字符
+        if (isset($Config['all_chs']) && $Config['all_chs']) { $xml_data = t2s($xml_data); }
         $db->beginTransaction();
         try {
-            processXmlData($xml_url, $xml_data, date('Y-m-d'), $db, $gen_list);
+            processXmlData($xml_url, $xml_data, $db, $gen_list);
             $db->commit();
             logMessage($log_messages, "【更新】 成功");
         } catch (Exception $e) {
@@ -83,21 +83,9 @@ function processData($xml_url, $db, &$log_messages, $gen_list) {
     }
 }
 
-function loadHashesFromJson($json_file) {
-    if (file_exists($json_file)) {
-        $json_data = file_get_contents($json_file);
-        return json_decode($json_data, true);
-    }
-    return [];
-}
-
-function saveHashesToJson($json_file, $hashes) {
-    $json_data = json_encode($hashes, JSON_PRETTY_PRINT);
-    file_put_contents($json_file, $json_data);
-}
-
 // 获取限定频道列表及映射关系
 function getGenList($db) {
+    global $Config;
     $channels = $db->query("SELECT channel FROM gen_list")->fetchAll(PDO::FETCH_COLUMN);
     if (empty($channels)) {
         return ['gen_list_mapping' => [], 'gen_list' => []];
@@ -142,8 +130,7 @@ function getChannelBindEPG() {
     global $Config;
     $channelBindEPG = [];
     foreach ($Config['channel_bind_epg'] ?? [] as $epg_src => $channels) {
-        $channelList = array_map('trim', explode(',', $channels));
-        foreach ($channelList as $channel) {
+        foreach (array_map('trim', explode(',', $channels)) as $channel) {
             $channelBindEPG[$channel][] = $epg_src;
         }
     }
@@ -151,8 +138,9 @@ function getChannelBindEPG() {
 }
 
 // 从 epg_data 表生成 XML 数据并逐个频道写入 t.xml 文件
-function generateXmlFromEpgData($db, $include_future_only, $gen_list_mapping) {
-    global $Config;
+function generateXmlFromEpgData($db, $include_future_only, $gen_list_mapping, &$log_messages) {
+    global $Config, $iconList, $iconList_path;
+
     $currentDate = date('Y-m-d'); // 获取当前日期
     $dateCondition = $include_future_only ? "WHERE date >= '$currentDate'" : '';
 
@@ -166,7 +154,7 @@ function generateXmlFromEpgData($db, $include_future_only, $gen_list_mapping) {
     $xmlWriter->startDocument('1.0', 'UTF-8');
     $xmlWriter->startElement('tv');
     $xmlWriter->writeAttribute('info-name', 'by Tak');
-    $xmlWriter->writeAttribute('info-url', 'https://github.com/TakcC/PHP-EPG-Docker-Server');
+    $xmlWriter->writeAttribute('info-url', 'https://github.com/taksssss/EPG-Server');
     $xmlWriter->setIndent(true);
     $xmlWriter->setIndentString('	'); // 设置缩进
 
@@ -211,9 +199,14 @@ function generateXmlFromEpgData($db, $include_future_only, $gen_list_mapping) {
             $xmlWriter->endElement(); // display-name
         }
 
-        // 写入台标信息
+        $iconUrl = iconUrlMatch($originalChannel);
+
+        if ($iconUrl) {
+            $iconList[strtoupper($originalChannel)] = $iconUrl;
+        }
+        
         $xmlWriter->startElement('icon');
-        $xmlWriter->writeAttribute('src', "https://live.fanmingming.com/tv/" . htmlspecialchars($originalChannel, ENT_XML1, 'UTF-8') . ".png");
+        $xmlWriter->writeAttribute('src', $iconUrl);
         $xmlWriter->endElement(); // icon
 
         $xmlWriter->endElement(); // channel
@@ -248,6 +241,13 @@ function generateXmlFromEpgData($db, $include_future_only, $gen_list_mapping) {
 
     // 所有频道数据写入完成后，生成 t.xml.gz 文件
     compressXmlFile('t.xml');
+
+    // 更新 iconList.json 文件中的数据
+    if (file_put_contents($iconList_path, json_encode($iconList, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) === false) {
+        logMessage($log_messages, "【台标列表】 更新 iconList.json 时发生错误！！！");
+    } else {
+        logMessage($log_messages, "【台标列表】 已更新 iconList.json");
+    }
 }
 
 // 生成 t.xml.gz 压缩文件
@@ -274,7 +274,7 @@ function formatTime($date, $time) {
 }
 
 // 处理 XML 数据并逐步存入数据库
-function processXmlData($xml_url, $xml_data, $date, $db, $gen_list) {
+function processXmlData($xml_url, $xml_data, $db, $gen_list) {
     global $Config;
     global $processedRecords;
     global $channel_bind_epg;
@@ -296,7 +296,7 @@ function processXmlData($xml_url, $xml_data, $date, $db, $gen_list) {
     }
 
     // 繁简转换和频道筛选
-    $simplifiedChannelNames = explode("\n", t2s(implode("\n", $cleanChannelNames)));
+    $simplifiedChannelNames = (isset($Config['all_chs']) && $Config['all_chs']) ? $cleanChannelNames : explode("\n", t2s(implode("\n", $cleanChannelNames)));
     $channelNamesMap = [];
     foreach ($cleanChannelNames as $channelId => $channelName) {
         $channelNameSimplified = array_shift($simplifiedChannelNames);
@@ -353,9 +353,9 @@ function processXmlData($xml_url, $xml_data, $date, $db, $gen_list) {
     
         if ($channelName && !isset($processedRecords[$recordKey])) {
             $programmeData = [
-                'title' => (string)$programme->title,
                 'start' => $start['time'],
-                'end' => $start['date'] === $end['date'] ? $end['time'] : '23:59',
+                'end' => $start['date'] === $end['date'] ? $end['time'] : '00:00',
+                'title' => (string)$programme->title,
                 'desc' => isset($programme->desc) && (string)$programme->desc !== (string)$programme->title ? (string)$programme->desc : ''
             ];
     
@@ -364,9 +364,9 @@ function processXmlData($xml_url, $xml_data, $date, $db, $gen_list) {
             // 保存跨天的节目数据
             if ($start['date'] !== $end['date'] && $end['time'] !== '00:00') {
                 $crossDayProgrammes[$channelId][$end['date']][] = [
-                    'title' => $programmeData['title'],
                     'start' => '00:00',
                     'end' => $end['time'],
+                    'title' => $programmeData['title'],
                     'desc' => $programmeData['desc']
                 ];
             }
@@ -390,55 +390,6 @@ function processXmlData($xml_url, $xml_data, $date, $db, $gen_list) {
     }
     
     $reader->close();
-}
-
-// 插入数据到数据库
-function insertDataToDatabase($channelsData, $db) {
-    global $processedRecords;
-    global $Config;
-
-    foreach ($channelsData as $channelId => $channelData) {
-        $channelName = $channelData['channel_name'];
-        foreach ($channelData['diyp_data'] as $date => $diypProgrammes) {
-            // 检查是否全天只有一个节目
-            if (count(array_unique(array_column($diypProgrammes, 'title'))) === 1) {
-                continue; // 跳过后续处理
-            }
-
-            // 生成 epg_diyp 数据内容
-            $diypContent = json_encode([
-                'channel_name' => $channelName,
-                'date' => $date,
-                'url' => 'https://github.com/TakcC/PHP-EPG-Docker-Server',
-                'epg_data' => $diypProgrammes
-            ], JSON_UNESCAPED_UNICODE);
-
-            // 当天及未来数据覆盖，其他日期数据忽略
-            $action = $date >= date('Y-m-d') ? 'REPLACE' : 'IGNORE';
-            
-            // 检测数据库类型
-            $is_sqlite = $Config['db_type'] === 'sqlite';
-
-            // 选择 SQL 语句
-            $sql = $is_sqlite 
-                ? "INSERT OR $action INTO epg_data (date, channel, epg_diyp) VALUES (:date, :channel, :epg_diyp)"
-                : ($date >= date('Y-m-d') 
-                    ? "REPLACE INTO epg_data (date, channel, epg_diyp) VALUES (:date, :channel, :epg_diyp)" 
-                    : "INSERT IGNORE INTO epg_data (date, channel, epg_diyp) VALUES (:date, :channel, :epg_diyp)"
-                );
-
-            // 准备并执行 SQL 语句
-            $stmt = $db->prepare($sql);
-            $stmt->bindValue(':date', $date, PDO::PARAM_STR);
-            $stmt->bindValue(':channel', $channelName, PDO::PARAM_STR);
-            $stmt->bindValue(':epg_diyp', $diypContent, PDO::PARAM_STR);
-            $stmt->execute();
-            if ($action == 'REPLACE' || $stmt->rowCount() > 0){
-                $recordKey = $channelName . '-' . $date;
-                $processedRecords[$recordKey] = true;
-            }
-        }
-    }
 }
 
 // 记录开始时间
@@ -467,18 +418,28 @@ foreach ($Config['xml_urls'] as $xml_url) {
     $xml_url = trim($xml_url);
     if (empty($xml_url) || strpos($xml_url, '#') === 0) {
         continue;
+    } elseif (strpos($xml_url, 'tvmao') === 0) {
+        // 更新 tvmao 数据
+        $tvmaostr = str_replace('tvmao,', '', $xml_url);
+        foreach (explode(',', $tvmaostr) as $tvmao_info) {
+            list($channel_name, $channel_id) = array_map('trim', explode(':', trim($tvmao_info)) + [null, $tvmao_info]);
+            $json_url = "https://sp0.baidu.com/8aQDcjqpAAV3otqbppnN2DJv/api.php?query=" . $channel_id . "&resource_id=12520&format=json";
+            downloadJSONData($json_url, $db, $log_messages, $channel_name);
+        }
+        continue;
     }
-    // 去除 URL 后的注释部分
+
+    // 更新 XML 数据
     $url_parts = explode('#', $xml_url);
     $cleaned_url = trim($url_parts[0]);
 
     logMessage($log_messages, "【更新地址】 $cleaned_url");
-    processData($cleaned_url, $db, $log_messages, $gen_list);
+    downloadXmlData($cleaned_url, $db, $log_messages, $gen_list);
 }
 
 // 判断是否生成 xmltv 文件
 if ($Config['gen_xml']) {
-    generateXmlFromEpgData($db, $Config['include_future_only'], $gen_list_mapping);        
+    generateXmlFromEpgData($db, $Config['include_future_only'], $gen_list_mapping, $log_messages);        
     logMessage($log_messages, "【xmltv文件】 已生成 t.xml、t.xml.gz");
 }
 
