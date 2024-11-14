@@ -135,7 +135,7 @@ function updateConfig() {
     $memcached_set = true;
     
     // 检查 Memcache 有效性
-    if (!empty($Config['cache_time']) && (!class_exists('Memcached') || !(new Memcached())->connect('localhost', 11211))) {
+    if (!empty($Config['cache_time']) && (!class_exists('Memcached') || !(new Memcached())->addServer('localhost', 11211))) {
         $Config['cache_time'] = 0;
         $memcached_set = false;
     }

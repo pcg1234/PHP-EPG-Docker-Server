@@ -60,14 +60,11 @@ function readEPGData($date, $oriChName, $cleanChName, $db, $type) {
     $cache_time = ($date < date('Y-m-d')) ? 7 * 24 * 3600 : $Config['cache_time'];
 
     // 检查是否开启缓存并安装了 Memcached 类
-    $memcached_enabled = $Config['cache_time'] && class_exists('Memcached') && (new Memcached())->connect('localhost', 11211);
+    $memcached_enabled = $Config['cache_time'] && class_exists('Memcached')
+        && ($memcached = new Memcached())->addServer('localhost', 11211);
     $cache_key = base64_encode("{$date}_{$cleanChName}_{$type}");
 
     if ($memcached_enabled) {
-        // 初始化 Memcached
-        $memcached = new Memcached();
-        $memcached->addServer('localhost', 11211); // 请确保 Memcached 服务器地址和端口正确
-
         // 从缓存中读取数据
         $cached_data = $memcached->get($cache_key);
         if ($cached_data) {
