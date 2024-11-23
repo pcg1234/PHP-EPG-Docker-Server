@@ -23,8 +23,8 @@ file_exists($iconList_path = __DIR__ . '/data/iconList.json') || file_put_conten
 $iconListDefault = json_decode(file_get_contents(__DIR__ . '/assets/defaultIconList.json'), true) or die("默认图标列表文件解析失败: " . json_last_error_msg());
 $iconListMerged = array_merge($iconListDefault, $iconList); // 同一个键，以 iconList 的为准
 $serverUrl = (($_SERVER['HTTPS'] ?? '') === 'on' ? 'https://' : 'http://') 
-            . ($_SERVER['HTTP_X_FORWARDED_HOST'] ?? $_SERVER['HTTP_HOST']) 
-            . rtrim(dirname($_SERVER['HTTP_X_ORIGINAL_URI'] ?? $_SERVER['REQUEST_URI']), '/');
+            . ($_SERVER['HTTP_X_FORWARDED_HOST'] ?? $_SERVER['HTTP_HOST'] ?? '')
+            . rtrim(dirname($_SERVER['HTTP_X_ORIGINAL_URI'] ?? $_SERVER['REQUEST_URI']) ?? '', '/');
 
 $Config = json_decode(file_get_contents($config_path), true) or die("配置文件解析失败: " . json_last_error_msg());
 
